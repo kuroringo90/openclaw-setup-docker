@@ -97,13 +97,20 @@ Ogni servizio accessibile da un path diverso:
 ```bash
 # Servizio A su porta 3000
 docker exec tailscale-sidecar tailscale serve --bg --set-path /servizio-a 3000
+docker exec tailscale-sidecar tailscale funnel --bg 3000
 
 # Servizio B su porta 8080
 docker exec tailscale-sidecar tailscale serve --bg --set-path /servizio-b 8080
+docker exec tailscale-sidecar tailscale funnel --bg 8080
 
 # Servizio C su porta 9000
 docker exec tailscale-sidecar tailscale serve --bg --set-path /servizio-c 9000
+docker exec tailscale-sidecar tailscale funnel --bg 9000
 ```
+
+**⚠️ Importante:** Usa la **stessa porta** per `serve` e `funnel`:
+- ✅ `tailscale serve --bg 3000` + `tailscale funnel --bg 3000`
+- ❌ `tailscale serve --bg 3000` + `tailscale funnel --bg 443` (crea conflitto!)
 
 **URL risultanti:**
 - `https://myproxy.tailnet.ts.net/servizio-a`

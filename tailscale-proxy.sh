@@ -83,6 +83,10 @@ configure_service() {
         exit 1
     fi
 
+    # Abilita funnel sulla porta del servizio (NON 443!)
+    # Funnel userà la stessa porta del serve
+    docker exec "${SIDECAR_CONTAINER}" tailscale funnel --bg "${service_port}" 2>&1 || log_warn "Funnel potrebbe già essere attivo"
+
     # Mostra URL
     local hostname
     hostname=$(get_hostname)
