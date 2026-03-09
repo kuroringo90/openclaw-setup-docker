@@ -196,6 +196,33 @@ get_magic_url() {
 # CONFIGURAZIONE OPENCLAW PER TAILSCALE
 # ============================================
 
+cleanup_duplicate_nodes() {
+    # Pulisce i nodi Tailscale duplicati con lo stesso hostname
+    if ! is_tailscale_running; then
+        return 0
+    fi
+
+    log_info "Verifica nodi Tailscale duplicati..."
+
+    # Ottieni lista nodi con hostname che iniziano con TAILSCALE_HOSTNAME
+    local nodes
+    nodes=$(docker exec "${TAILSCALE_CONTAINER}" tailscale status --json 2>/dev/null || true)
+
+    if [[ -z "$nodes" ]]; then
+        return 0
+    fi
+
+    # Conta quanti nodi hanno l'hostname configurato
+    local node_count
+    node_count=$(echo "$nodes" | grep -o "\"Hostname\"[[:space:]]*:[[:space:]]*\"${TAILSCALE_HOSTNAME}[^\"]*\"" | wc -l)
+
+    if [[ $node_count -gt 1 ]]; then
+        log_warn "Trovati $node_count nodi con hostname '${TAILSCALE_HOSTNAME}'"
+        log_info "Per pulire, elimina i nodi offline da:"
+        log_info "  https://login.tailscale.com/admin/machines"
+    fi
+}
+
 apply_openclaw_tailscale_config() {
     local config_file="${DATA_DIR}/data/openclaw.json"
 
@@ -323,13 +350,16 @@ cmd_start() {
         if [[ -n "$authkey" ]]; then
             log_info "Avvio Tailscale sidecar..."
             cmd_tailscale_start "$authkey"
-            
+
             # Attendi autenticazione e configura serve/funnel
             sleep 3
             log_info "Configurazione Tailscale..."
             docker exec "${TAILSCALE_CONTAINER}" tailscale serve --bg 18789 >/dev/null 2>&1 || true
             docker exec "${TAILSCALE_CONTAINER}" tailscale funnel --bg 18789 >/dev/null 2>&1 || true
-            
+
+            # Verifica nodi duplicati
+            cleanup_duplicate_nodes
+
             # Solo al primo avvio: mostra cerimonia Magic URL
             if [[ "$first_run" == true ]]; then
                 sleep 2
@@ -728,6 +758,18 @@ cmd_status_full() {
                 echo -e "│ Reach:    ${GREEN}✅ RAGGIUNGIBILE${NC}"
             else
                 echo -e "│ Reach:    ${YELLOW}⚠️ VERIFICA MANUALE${NC}"
+            fi
+            
+            # Mostra URL con token
+            local auth_token=""
+            local config_file="${DATA_DIR}/data/openclaw.json"
+            if [[ -f "${config_file}" ]]; then
+                auth_token=$(python3 -c "import json; c=json.load(open('${config_file}')); print(c.get('gateway',{}).get('auth',{}).get('token',''))" 2>/dev/null || true)
+            fi
+            
+            if [[ -n "$auth_token" ]]; then
+                echo -e "│ Token:    ${YELLOW}${auth_token}${NC}"
+                echo -e "│ URL+Token: ${BLUE}${magic_url}?token=${auth_token}${NC}"
             fi
         else
             echo -e "│ URL:      ${YELLOW}⚠️ IN GENERAZIONE${NC}"
