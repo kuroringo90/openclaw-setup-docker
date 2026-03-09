@@ -222,36 +222,61 @@ cmd_start() {
         fi
     fi
 
-    # PRIMO AVVIO: Auto Tailscale
-    if [[ "$first_run" == true ]]; then
-        log_info "Primo avvio rilevato: configurazione automatica Tailscale..."
+    # AVVIO TAILSCALE: Sempre (non solo al primo avvio)
+    # La configurazione serve/funnel va riapplicata ad ogni avvio sidecar
+    log_info "Verifica Tailscale sidecar..."
+    
+    if is_tailscale_running; then
+        log_success "Tailscale sidecar già attivo"
+    else
+        # Tailscale non attivo: avvia se abbiamo authkey
+        local authkey=""
         
-        local authkey
-        authkey=$(get_ts_authkey)
+        # Cerca authkey salvata
+        if [[ -f "${ENV_FILE}" ]]; then
+            authkey=$(grep -E "^TS_AUTHKEY=" "${ENV_FILE}" 2>/dev/null | cut -d'=' -f2 | tr -d '"' || true)
+        fi
         
         if [[ -n "$authkey" ]]; then
+            log_info "Avvio Tailscale sidecar..."
             cmd_tailscale_start "$authkey"
-            sleep 2
-            cmd_tailscale_config
-            echo ""
-            log_success "Configurazione completata!"
-            echo -e "${CYAN}════════════════════════════════════════${NC}"
-            echo -e "${GREEN}🎉 MAGIC URL:${NC}"
-            local magic_url
-            magic_url=$(get_magic_url)
-            if [[ -n "$magic_url" ]]; then
-                echo -e "${BLUE}${magic_url}${NC}"
-            else
-                echo -e "${YELLOW}URL in generazione, usa: ./openclaw-manager-tailscale.sh tunnel-url${NC}"
+            
+            # Attendi autenticazione e configura serve/funnel
+            sleep 3
+            log_info "Configurazione Tailscale..."
+            docker exec "${TAILSCALE_CONTAINER}" tailscale serve --bg 18789 >/dev/null 2>&1 || true
+            docker exec "${TAILSCALE_CONTAINER}" tailscale funnel --bg 18789 >/dev/null 2>&1 || true
+            
+            # Solo al primo avvio: mostra cerimonia Magic URL
+            if [[ "$first_run" == true ]]; then
+                sleep 2
+                echo ""
+                log_success "Configurazione completata!"
+                echo -e "${CYAN}════════════════════════════════════════${NC}"
+                echo -e "${GREEN}🎉 MAGIC URL:${NC}"
+                local magic_url
+                magic_url=$(get_magic_url)
+                if [[ -n "$magic_url" ]]; then
+                    echo -e "${BLUE}${magic_url}${NC}"
+                else
+                    echo -e "${YELLOW}URL in generazione, usa: ./openclaw-manager-tailscale.sh tunnel-url${NC}"
+                fi
+                echo -e "${CYAN}════════════════════════════════════════${NC}"
             fi
-            echo -e "${CYAN}════════════════════════════════════════${NC}"
         else
-            log_warn "Tailscale saltato (nessuna authkey)"
+            log_info "Nessuna TS_AUTHKEY: Tailscale non avviato"
+            log_info "Per abilitare: ./openclaw-manager-tailscale.sh tailscale-start"
         fi
-    else
-        # Avvio successivo: check sidecar
-        if ! is_tailscale_running; then
-            log_info "Tailscale sidecar non attivo. Avvia con: ./openclaw-manager-tailscale.sh tailscale-start"
+    fi
+
+    # Mostra Magic URL se Tailscale è attivo (sempre)
+    sleep 2
+    if is_tailscale_running; then
+        echo ""
+        local magic_url
+        magic_url=$(get_magic_url)
+        if [[ -n "$magic_url" ]]; then
+            echo -e "${GREEN}🌐 Magic URL: ${BLUE}${magic_url}${NC}"
         fi
     fi
 
@@ -265,6 +290,13 @@ cmd_start() {
 cmd_stop() {
     check_prereqs
 
+    # Ferma prima Tailscale (dipende da OpenClaw)
+    if is_tailscale_running; then
+        log_info "Arresto Tailscale sidecar..."
+        docker rm -f "${TAILSCALE_CONTAINER}" >/dev/null 2>&1 || true
+        log_success "Tailscale arrestato"
+    fi
+
     if ! is_openclaw_running; then
         log_warn "OpenClaw non è in esecuzione"
         return 0
@@ -277,9 +309,25 @@ cmd_stop() {
 }
 
 cmd_restart() {
-    cmd_stop
-    docker rm -f "${CONTAINER_NAME}" 2>/dev/null || true
-    sleep 1
+    log_info "Riavvio OpenClaw + Tailscale..."
+    
+    # Ferma Tailscale prima (dipende da OpenClaw)
+    if is_tailscale_running; then
+        docker rm -f "${TAILSCALE_CONTAINER}" >/dev/null 2>&1 || true
+    fi
+    
+    # Ferma OpenClaw
+    if is_openclaw_running; then
+        cd "${DATA_DIR}" 2>/dev/null || true
+        docker-compose down >/dev/null 2>&1 || docker stop "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+    fi
+    
+    # Rimuove container OpenClaw
+    docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+    
+    sleep 2
+    
+    # Riavvia tutto
     cmd_start
 }
 
@@ -444,6 +492,7 @@ cmd_tailscale_start() {
     
     # Crea sidecar con --network container:openclaw
     # Usa userspace-networking perché condivide il network con openclaw
+    # Hostname fisso per mantenere lo stesso nome nodo
     local run_output
     if ! run_output=$(docker run -d \
         --name "${TAILSCALE_CONTAINER}" \
@@ -459,9 +508,10 @@ cmd_tailscale_start() {
 
     if is_tailscale_running; then
         log_success "Tailscale sidecar avviato!"
-        # Autenticazione esplicita con authkey
+        # Autenticazione esplicita con authkey e hostname fisso
+        # --force-reauth sovrascrive il nodo esistente con lo stesso hostname
         log_info "Autenticazione in corso..."
-        docker exec "${TAILSCALE_CONTAINER}" tailscale up --authkey="${authkey}" --timeout=30s 2>&1 || log_warn "Autenticazione fallita, verifica la authkey"
+        docker exec "${TAILSCALE_CONTAINER}" tailscale up --authkey="${authkey}" --timeout=30s --hostname=openclaw --force-reauth 2>&1 || log_warn "Autenticazione fallita, verifica la authkey"
     else
         log_error "Avvio Tailscale fallito!"
         log_info "Controlla i log: docker logs ${TAILSCALE_CONTAINER}"
