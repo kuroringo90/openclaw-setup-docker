@@ -173,14 +173,21 @@ get_magic_url() {
         return
     fi
 
-    # Estrai hostname dalla Tailscale status
-    local hostname
-    hostname=$(echo "$status_output" | grep -o '"Hostname"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | cut -d'"' -f4 || true)
+    # Estrai DNSName (già completo, es: ste-b550gamingxv2.tail5d495.ts.net.)
+    local dnsname
+    dnsname=$(echo "$status_output" | grep -o '"DNSName"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | cut -d'"' -f4 | sed 's/\.$//' || true)
     
-    if [[ -n "$hostname" ]]; then
-        echo "https://${hostname}.tailnet.ts.net/"
+    if [[ -n "$dnsname" ]]; then
+        echo "https://${dnsname}/"
     else
-        echo ""
+        # Fallback: usa hostname + tailnet.ts.net
+        local hostname
+        hostname=$(echo "$status_output" | grep -o '"Hostname"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | cut -d'"' -f4 || true)
+        if [[ -n "$hostname" ]]; then
+            echo "https://${hostname}.tailnet.ts.net/"
+        else
+            echo ""
+        fi
     fi
 }
 
@@ -485,16 +492,23 @@ cmd_tailscale_config() {
         sleep 2
     done
 
-    # Configura serve per esporre OpenClaw
-    log_info "Configura serve: / → http://127.0.0.1:18789"
-    docker exec "${TAILSCALE_CONTAINER}" tailscale serve --bg \
-        --set-proxy=http://127.0.0.1:18789 \
-        / 2>/dev/null || true
+    # Verifica se Tailscale è autenticato
+    if ! docker exec "${TAILSCALE_CONTAINER}" tailscale status 2>&1 | grep -q "^[0-9]"; then
+        log_error "Tailscale non autenticato"
+        log_info "Rilancia: ./openclaw-manager-tailscale.sh tailscale-start"
+        exit 1
+    fi
 
-    # Configura funnel per esporre su 443
+    # Configura serve per esporre OpenClaw (porta 18789)
+    log_info "Configura serve: porta 18789"
+    docker exec "${TAILSCALE_CONTAINER}" tailscale serve --bg 18789 2>&1 || {
+        log_warn "Serve non abilitato sulla tua tailnet"
+        log_info "Abilitalo su: https://login.tailscale.com/f/serve?node=$(docker exec ${TAILSCALE_CONTAINER} tailscale status --json 2>/dev/null | grep -o '"Self"[^}]*' | head -1 || echo 'N/A')"
+    }
+
+    # Configura funnel per esporre su 443 (opzionale)
     log_info "Configura funnel: 443"
-    docker exec "${TAILSCALE_CONTAINER}" tailscale funnel --bg --off 2>/dev/null || true
-    docker exec "${TAILSCALE_CONTAINER}" tailscale funnel --bg 443 2>/dev/null || true
+    docker exec "${TAILSCALE_CONTAINER}" tailscale funnel --bg 443 2>&1 || log_warn "Funnel non disponibile"
 
     sleep 2
 
