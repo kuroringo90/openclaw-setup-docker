@@ -602,13 +602,15 @@ cmd_tailscale_start() {
     fi
 
     log_info "Avvio Tailscale sidecar..."
-    
+
     # Crea sidecar con --network container:openclaw
     # Usa userspace-networking perché condivide il network con openclaw
     # Hostname fisso per mantenere lo stesso nome nodo
+    # Restart policy per riavvio automatico dopo reboot host
     local run_output
     if ! run_output=$(docker run -d \
         --name "${TAILSCALE_CONTAINER}" \
+        --restart unless-stopped \
         --network container:"${CONTAINER_NAME}" \
         -e TS_AUTHKEY="${authkey}" \
         tailscale/tailscale:latest \
