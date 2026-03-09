@@ -503,12 +503,12 @@ cmd_tailscale_config() {
     log_info "Configura serve: porta 18789"
     docker exec "${TAILSCALE_CONTAINER}" tailscale serve --bg 18789 2>&1 || {
         log_warn "Serve non abilitato sulla tua tailnet"
-        log_info "Abilitalo su: https://login.tailscale.com/f/serve?node=$(docker exec ${TAILSCALE_CONTAINER} tailscale status --json 2>/dev/null | grep -o '"Self"[^}]*' | head -1 || echo 'N/A')"
+        log_info "Abilitalo su: https://login.tailscale.com/admin/settings/serve"
     }
 
-    # Configura funnel per esporre su 443 (opzionale)
-    log_info "Configura funnel: 443"
-    docker exec "${TAILSCALE_CONTAINER}" tailscale funnel --bg 443 2>&1 || log_warn "Funnel non disponibile"
+    # Configura funnel per accesso pubblico (internet, non solo tailnet)
+    log_info "Configura funnel: 18789 (accesso pubblico)"
+    docker exec "${TAILSCALE_CONTAINER}" tailscale funnel --bg 18789 2>&1 || log_warn "Funnel non disponibile"
 
     sleep 2
 
