@@ -168,7 +168,7 @@ get_magic_url() {
 
     local status_output
     status_output=$(docker exec "${TAILSCALE_CONTAINER}" tailscale status --json 2>/dev/null || true)
-    
+
     if [[ -z "$status_output" ]]; then
         echo ""
         return
@@ -177,7 +177,7 @@ get_magic_url() {
     # Estrai DNSName (già completo, es: ste-b550gamingxv2.tail5d495.ts.net.)
     local dnsname
     dnsname=$(echo "$status_output" | grep -o '"DNSName"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | cut -d'"' -f4 | sed 's/\.$//' || true)
-    
+
     if [[ -n "$dnsname" ]]; then
         echo "https://${dnsname}/"
     else
@@ -190,6 +190,85 @@ get_magic_url() {
             echo ""
         fi
     fi
+}
+
+# ============================================
+# CONFIGURAZIONE OPENCLAW PER TAILSCALE
+# ============================================
+
+apply_openclaw_tailscale_config() {
+    local config_file="${DATA_DIR}/data/openclaw.json"
+
+    # Solo se il file esiste già (configurazione persistente)
+    if [[ ! -f "${config_file}" ]]; then
+        return 0
+    fi
+
+    log_info "Verifica configurazione OpenClaw per Tailscale..."
+
+    # Ottieni il tailnet domain da Tailscale se disponibile
+    local tailnet_domain="tailnet.ts.net"
+    if is_tailscale_running; then
+        local ts_status
+        ts_status=$(docker exec "${TAILSCALE_CONTAINER}" tailscale status --json 2>/dev/null || true)
+        if [[ -n "$ts_status" ]]; then
+            local dnsname
+            dnsname=$(echo "$ts_status" | grep -o '"DNSName"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | cut -d'"' -f4 | sed 's/\.$//' || true)
+            if [[ -n "$dnsname" ]]; then
+                # Estrai il dominio (tutto dopo il primo punto)
+                tailnet_domain=$(echo "$dnsname" | cut -d'.' -f2-)
+            fi
+        fi
+    fi
+
+    # Usa Python per modificare il JSON in modo sicuro
+    python3 << PYEOF
+import json
+import sys
+
+config_file = "${config_file}"
+hostname = "${TAILSCALE_HOSTNAME}"
+tailnet_domain = "${tailnet_domain}"
+
+try:
+    with open(config_file, 'r') as f:
+        config = json.load(f)
+
+    modified = False
+
+    # Aggiungi trustedProxies se manca
+    if 'trustedProxies' not in config.get('gateway', {}):
+        config.setdefault('gateway', {})['trustedProxies'] = ['0.0.0.0/0', '127.0.0.1/8']
+        modified = True
+        print("  + aggiunto trustedProxies")
+
+    # Aggiungi controlUi.allowedOrigins se manca
+    if 'controlUi' not in config.get('gateway', {}):
+        config.setdefault('gateway', {}).setdefault('controlUi', {})['allowedOrigins'] = [
+            'http://127.0.0.1:18789'
+        ]
+        modified = True
+        print("  + aggiunto controlUi.allowedOrigins")
+    else:
+        # Aggiungi hostname Tailscale se manca
+        origins = config['gateway']['controlUi'].get('allowedOrigins', [])
+        tailscale_origin = f"https://{hostname}.{tailnet_domain}"
+        if not any(hostname in o for o in origins):
+            config['gateway']['controlUi']['allowedOrigins'].append(tailscale_origin)
+            modified = True
+            print(f"  + aggiunto {tailscale_origin} a allowedOrigins")
+
+    if modified:
+        with open(config_file, 'w') as f:
+            json.dump(config, f, indent=2)
+        print("  Configurazione aggiornata!")
+    else:
+        print("  Configurazione OK")
+
+except Exception as e:
+    print(f"  Errore: {e}", file=sys.stderr)
+    sys.exit(1)
+PYEOF
 }
 
 # ============================================
@@ -222,6 +301,9 @@ cmd_start() {
             exit 1
         fi
     fi
+
+    # Applica configurazione OpenClaw per Tailscale (se necessario)
+    apply_openclaw_tailscale_config
 
     # AVVIO TAILSCALE: Sempre (non solo al primo avvio)
     # La configurazione serve/funnel va riapplicata ad ogni avvio sidecar
