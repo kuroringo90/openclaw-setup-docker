@@ -687,10 +687,10 @@ cmd_tunnel_url() {
     fi
 
     echo -e "${CYAN}=== Magic URL ===${NC}"
-    
+
     local magic_url
     magic_url=$(get_magic_url)
-    
+
     if [[ -n "$magic_url" ]]; then
         echo -e "${GREEN}${magic_url}${NC}"
         echo ""
@@ -705,6 +705,35 @@ cmd_tunnel_url() {
         log_info "Verifica con: docker exec ${TAILSCALE_CONTAINER} tailscale status"
         exit 1
     fi
+}
+
+cmd_devices() {
+    check_prereqs
+
+    if ! is_openclaw_running; then
+        log_error "OpenClaw non in esecuzione!"
+        exit 1
+    fi
+
+    case "${2:-list}" in
+        list)
+            log_info "Dispositivi in attesa di approvazione..."
+            docker exec "${CONTAINER_NAME}" openclaw devices list
+            ;;
+        approve)
+            if [[ -z "${3:-}" ]]; then
+                log_error "Specifica l'ID richiesta: ./openclaw-manager-tailscale.sh devices approve <requestId>"
+                exit 1
+            fi
+            log_info "Approvo dispositivo $3..."
+            docker exec "${CONTAINER_NAME}" openclaw devices approve "$3"
+            log_success "Dispositivo approvato!"
+            ;;
+        *)
+            log_error "Uso: ./openclaw-manager-tailscale.sh devices [list|approve <id>]"
+            exit 1
+            ;;
+    esac
 }
 
 cmd_status_full() {
@@ -832,13 +861,21 @@ COMANDI TAILSCALE:
     status-full       Stato completo (OpenClaw | Tailscale | Tunnel)
     full-reset        ⚠️ Elimina TUTTO (OpenClaw + Tailscale + dati)
 
+COMANDI DISPOSITIVI:
+    devices list      Lista dispositivi in attesa di approvazione
+    devices approve   Approva un dispositivo (richiede requestId)
+
 USO:
     ./openclaw-manager-tailscale.sh start
     # Primo avvio: configurazione automatica Tailscale
     # Avvio successivo: solo OpenClaw + check sidecar
 
     ./openclaw-manager-tailscale.sh status-full
-    # Mostra stato completo con Magic URL
+    # Mostra stato completo con Magic URL e Token
+
+    # Approvare nuovi dispositivi:
+    ./openclaw-manager-tailscale.sh devices list
+    ./openclaw-manager-tailscale.sh devices approve <requestId>
 
 EOF
 }
@@ -864,7 +901,10 @@ case "${1:-help}" in
     tunnel-url)         cmd_tunnel_url ;;
     status-full)        cmd_status_full ;;
     full-reset)         cmd_full_reset ;;
-    
+
+    # Device commands
+    devices|dev)        cmd_devices ;;
+
     help|--help|-h) show_help ;;
     *)
         log_error "Comando sconosciuto: $1"
