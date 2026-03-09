@@ -17,6 +17,7 @@ DATA_DIR="${HOME}/.openclaw"
 COMPOSE_FILE="${DATA_DIR}/docker-compose.yml"
 ENV_FILE="${DATA_DIR}/.env"
 TAILSCALE_CONTAINER="openclaw-tailscale"
+TAILSCALE_HOSTNAME="steagent"
 
 # Colori per output
 RED='\033[0;31m'
@@ -511,7 +512,7 @@ cmd_tailscale_start() {
         # Autenticazione esplicita con authkey e hostname fisso
         # --force-reauth sovrascrive il nodo esistente con lo stesso hostname
         log_info "Autenticazione in corso..."
-        docker exec "${TAILSCALE_CONTAINER}" tailscale up --authkey="${authkey}" --timeout=30s --hostname=openclaw --force-reauth 2>&1 || log_warn "Autenticazione fallita, verifica la authkey"
+        docker exec "${TAILSCALE_CONTAINER}" tailscale up --authkey="${authkey}" --timeout=30s --hostname="${TAILSCALE_HOSTNAME}" --force-reauth 2>&1 || log_warn "Autenticazione fallita, verifica la authkey"
     else
         log_error "Avvio Tailscale fallito!"
         log_info "Controlla i log: docker logs ${TAILSCALE_CONTAINER}"
