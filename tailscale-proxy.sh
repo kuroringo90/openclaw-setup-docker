@@ -144,7 +144,9 @@ show_status() {
         fi
 
         # Funnel status
-        if docker exec "${SIDECAR_CONTAINER}" tailscale funnel status 2>&1 | grep -q "Available on the internet"; then
+        local funnel_output
+        funnel_output=$(docker exec "${SIDECAR_CONTAINER}" tailscale funnel status 2>&1)
+        if echo "$funnel_output" | grep -qE "(Available on the internet|Funnel on)"; then
             echo -e "│ Funnel: ${GREEN}✅ ABILITATO${NC}"
         else
             echo -e "│ Funnel: ${YELLOW}⚠️ NON ABILITATO${NC}"
