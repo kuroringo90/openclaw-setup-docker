@@ -168,26 +168,36 @@ cleanup_duplicate_nodes_api() {
     local tailnet="${TS_TAILNET:-}"
     
     if [[ -z "$api_key" ]]; then
-        log_warn "TS_API_KEY non impostata: impossibile usare API per cleanup"
-        log_info "Ottieni API key da: https://login.tailscale.com/admin/settings/api"
+        log_warn "TS_API_KEY non impostata: skip cleanup API"
         return 0
     fi
     
+    # Auto-rileva tailnet se non impostata
     if [[ -z "$tailnet" ]]; then
         tailnet=$(get_tailnet_name)
         if [[ -z "$tailnet" ]]; then
-            log_error "Impossibile determinare tailnet name"
-            return 1
+            log_warn "Tailnet non determinata: skip cleanup API"
+            log_info "Imposta TS_TAILNET in ${ENV_FILE} (es: tail12345678)"
+            return 0
         fi
     fi
     
-    log_info "Ricerca nodi duplicati per hostname: ${hostname}..."
+    log_info "Verifica nodi duplicati: ${hostname}.${tailnet}.ts.net..."
     
     # Chiama API Tailscale per lista dispositivi
     local devices
-    devices=$(curl -s -u "${api_key}:" \
+    devices=$(curl -s -X GET \
+        -u "${api_key}:" \
         "https://api.tailscale.com/api/v2/tailnet/${tailnet}/devices" \
+        -H "Accept: application/json" \
         2>/dev/null || echo "")
+    
+    # Verifica risposta API
+    if [[ -z "$devices" ]] || echo "$devices" | grep -q "not found"; then
+        log_warn "API non disponibile: tailnet '${tailnet}' non trovata"
+        log_info "Verifica TS_TAILNET in ${ENV_FILE}"
+        return 0
+    fi
     
     if [[ -z "$devices" ]]; then
         log_error "Chiamata API fallita"
@@ -284,11 +294,10 @@ cmd_start() {
         docker run -d \
             --name "${CONTAINER_NAME}" \
             --restart unless-stopped \
-            --network host \
             -v "${STATE_DIR}:/var/lib/tailscale" \
             -e TS_AUTHKEY="${TS_AUTHKEY}" \
             "${IMAGE_NAME}" \
-            tailscaled --tun=userspace-networking --hostname="${TS_HOSTNAME:-tailscale-funnel}"
+            tailscaled --tun=userspace-networking
         
         sleep 3
         
@@ -422,17 +431,19 @@ cmd_add() {
         exit 1
     fi
     
-    log_info "Aggiunta servizio: ${name} → porta ${port}"
+    log_info "Aggiunta servizio: ${name} → porta ${port} (path: ${path})"
     
-    docker exec "${CONTAINER_NAME}" tailscale serve --bg --set-path "${path}" "${port}" 2>&1 || {
+    # Configura solo serve (path-based routing)
+    # Funnel è già attivo sulla porta principale
+    if docker exec "${CONTAINER_NAME}" tailscale serve --bg --set-path "${path}" "${port}" 2>&1; then
+        log_success "Servizio aggiunto!"
+    else
         log_error "Configurazione fallita"
         exit 1
-    }
+    fi
     
-    docker exec "${CONTAINER_NAME}" tailscale funnel --bg "${port}" 2>&1 || log_warn "Funnel potrebbe già essere attivo"
-    
-    log_success "Servizio aggiunto!"
-    cmd_url
+    log_warn "Nota: Funnel espone solo la porta principale"
+    log_info "Per accesso tailnet: https://hostname${path}"
 }
 
 cmd_remove() {
