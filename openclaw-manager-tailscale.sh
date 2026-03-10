@@ -123,14 +123,15 @@ try:
         name = device.get('name', '')
         if name.startswith('$hostname'):
             nodes.append({
-                'id': device.get('id', ''),
+                'id': device.get('id', ''),  # ID dispositivo (UUID)
+                'nodeId': device.get('nodeId', ''),  # Node ID
                 'name': name,
                 'lastSeen': device.get('lastSeen', '')
             })
     # Ordina per lastSeen (più recente primo)
     nodes.sort(key=lambda x: x['lastSeen'] or '', reverse=True)
     for node in nodes:
-        print(f\"{node['id']}|{node['name']}|{node['lastSeen'] or 'never'}\")
+        print(f\"{node['id']}|{node['nodeId']}|{node['name']}|{node['lastSeen'] or 'never'}\")
 except Exception as e:
     print(f'ERROR: {e}', file=sys.stderr)
     sys.exit(1)
@@ -150,27 +151,29 @@ except Exception as e:
     fi
     
     log_warn "Trovati ${node_count} nodi con hostname '${hostname}':"
-    echo "$matching_nodes" | while IFS='|' read -r id name lastseen; do
+    echo "$matching_nodes" | while IFS='|' read -r id nodeid name lastseen; do
         echo "  - ${name} (last: ${lastseen})"
     done
     
     # Mantieni solo il più recente, elimina gli altri
     local first=true
-    echo "$matching_nodes" | while IFS='|' read -r id name lastseen; do
+    echo "$matching_nodes" | while IFS='|' read -r id nodeid name lastseen; do
         if [[ "$first" == true ]]; then
             first=false
             log_info "Mantengo nodo: ${name}"
         else
             log_info "Elimino nodo duplicato: ${name}..."
             
+            # Usa l'ID dispositivo (UUID) per l'eliminazione
             local delete_response
             delete_response=$(curl -s -X DELETE \
                 -u "${api_key}:" \
                 "https://api.tailscale.com/api/v2/device/${id}" \
+                -H "Accept: application/json" \
                 2>/dev/null || echo "ERROR")
             
-            if [[ "$delete_response" == "ERROR" ]] || [[ -n "$delete_response" && "$delete_response" != "{}" ]]; then
-                log_warn "Eliminazione fallita per ${name}"
+            if [[ "$delete_response" == "ERROR" ]] || [[ -n "$delete_response" && "$delete_response" != "{}" && ! "$delete_response" =~ "message.*deleted" ]]; then
+                log_warn "Eliminazione fallita: ${delete_response}"
             else
                 log_success "Eliminato: ${name}"
             fi
