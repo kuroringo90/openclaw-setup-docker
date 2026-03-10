@@ -52,6 +52,158 @@ check_prereqs() {
     log_success "Prerequisiti OK"
 }
 
+# ============================================
+# GESTIONE NODI DUPLICATI VIA API
+# ============================================
+
+cleanup_duplicate_nodes_api() {
+    local hostname="${TAILSCALE_HOSTNAME:-openclaw}"
+    
+    # Carica API key da .env
+    local api_key=""
+    local tailnet=""
+    
+    if [[ -f "${ENV_FILE}" ]]; then
+        api_key=$(grep -E "^TS_API_KEY=" "${ENV_FILE}" 2>/dev/null | cut -d'=' -f2 | tr -d '"' || true)
+        tailnet=$(grep -E "^TS_TAILNET=" "${ENV_FILE}" 2>/dev/null | cut -d'=' -f2 | tr -d '"' || true)
+    fi
+    
+    # Se non in .env, prova da ambiente
+    api_key="${api_key:-${TS_API_KEY:-}}"
+    tailnet="${tailnet:-${TS_TAILNET:-}}"
+    
+    if [[ -z "$api_key" ]]; then
+        log_warn "TS_API_KEY non configurata: skip cleanup nodi duplicati"
+        log_info "Aggiungi TS_API_KEY in ${ENV_FILE}"
+        return 0
+    fi
+    
+    log_info "Verifica nodi duplicati per hostname: ${hostname}..."
+    
+    # Se tailnet non specificata, prova a determinare dall'API
+    if [[ -z "$tailnet" ]]; then
+        log_info "TS_TAILNET non specificata: provo a determinare dall'API..."
+        
+        # Chiama API per ottenere info sull'utente
+        local whoami
+        whoami=$(curl -s -X GET \
+            -u "${api_key}:" \
+            "https://api.tailscale.com/api/v2/user" \
+            -H "Accept: application/json" \
+            2>/dev/null || echo "")
+        
+        if [[ -n "$whoami" ]] && ! echo "$whoami" | grep -q "error"; then
+            # Estrai email dall'utente
+            local email
+            email=$(echo "$whoami" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('loginServerUrl', '').replace('https://', '').split('.')[0] if d.get('loginServerUrl') else '')" 2>/dev/null || true)
+            if [[ -n "$email" ]]; then
+                log_info "Tailnet trovata: ${email}"
+                # Per ora skip, l'utente deve configurare manualmente
+                log_warn "Configura TS_TAILNET in ${ENV_FILE}"
+                return 0
+            fi
+        fi
+        
+        log_warn "Impossibile determinare tailnet: configura TS_TAILNET in ${ENV_FILE}"
+        return 0
+    fi
+    
+    log_info "Tailnet: ${tailnet}"
+    
+    # Chiama API Tailscale per lista dispositivi
+    local devices
+    devices=$(curl -s -X GET \
+        -u "${api_key}:" \
+        "https://api.tailscale.com/api/v2/tailnet/${tailnet}/devices" \
+        -H "Accept: application/json" \
+        2>/dev/null || echo "")
+    
+    # Verifica risposta API
+    if [[ -z "$devices" ]]; then
+        log_warn "API: nessuna risposta"
+        return 0
+    fi
+    
+    if echo "$devices" | grep -q "not found"; then
+        log_warn "API: tailnet '${tailnet}' non trovata"
+        log_info "Verifica TS_TAILNET su https://login.tailscale.com/admin/settings/dns"
+        return 0
+    fi
+    
+    if echo "$devices" | grep -q "unauthorized"; then
+        log_warn "API: non autorizzato"
+        log_info "Verifica TS_API_KEY su https://login.tailscale.com/admin/settings/api"
+        return 0
+    fi
+    
+    # Trova nodi con hostname che inizia con TAILSCALE_HOSTNAME
+    local matching_nodes
+    matching_nodes=$(echo "$devices" | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    nodes = []
+    for device in data.get('devices', []):
+        name = device.get('name', '')
+        if name.startswith('$hostname'):
+            nodes.append({
+                'id': device.get('id', ''),
+                'name': name,
+                'lastSeen': device.get('lastSeen', '')
+            })
+    # Ordina per lastSeen (più recente primo)
+    nodes.sort(key=lambda x: x['lastSeen'] or '', reverse=True)
+    for node in nodes:
+        print(f\"{node['id']}|{node['name']}|{node['lastSeen'] or 'never'}\")
+except Exception as e:
+    print(f'ERROR: {e}', file=sys.stderr)
+    sys.exit(1)
+" 2>&1)
+    
+    if [[ -z "$matching_nodes" ]] || echo "$matching_nodes" | grep -q "^ERROR:"; then
+        log_warn "API: errore parsing risposta"
+        return 0
+    fi
+    
+    local node_count
+    node_count=$(echo "$matching_nodes" | wc -l)
+    
+    if [[ $node_count -le 1 ]]; then
+        log_success "Nessun nodo duplicato trovato"
+        return 0
+    fi
+    
+    log_warn "Trovati ${node_count} nodi con hostname '${hostname}':"
+    echo "$matching_nodes" | while IFS='|' read -r id name lastseen; do
+        echo "  - ${name} (last: ${lastseen})"
+    done
+    
+    # Mantieni solo il più recente, elimina gli altri
+    local first=true
+    echo "$matching_nodes" | while IFS='|' read -r id name lastseen; do
+        if [[ "$first" == true ]]; then
+            first=false
+            log_info "Mantengo nodo: ${name}"
+        else
+            log_info "Elimino nodo duplicato: ${name}..."
+            
+            local delete_response
+            delete_response=$(curl -s -X DELETE \
+                -u "${api_key}:" \
+                "https://api.tailscale.com/api/v2/device/${id}" \
+                2>/dev/null || echo "ERROR")
+            
+            if [[ "$delete_response" == "ERROR" ]] || [[ -n "$delete_response" && "$delete_response" != "{}" ]]; then
+                log_warn "Eliminazione fallita per ${name}"
+            else
+                log_success "Eliminato: ${name}"
+            fi
+        fi
+    done
+    
+    log_success "Cleanup completato!"
+}
+
 check_image() {
     if ! docker images --format '{{.Repository}}:{{.Tag}}' | grep -q "^${IMAGE_NAME}$"; then
         log_error "Immagine ${IMAGE_NAME} non trovata localmente!"
@@ -575,8 +727,11 @@ cmd_update() {
 
 cmd_tailscale_start() {
     local authkey="${1:-}"
-    
+
     check_prereqs
+
+    # ELIMINA NODI DUPLICATI PRIMA DI AVVIARE
+    cleanup_duplicate_nodes_api
 
     # Cleanup container esistente (anche se fermo)
     if docker ps -a --format '{{.Names}}' | grep -q "^${TAILSCALE_CONTAINER}$"; then
