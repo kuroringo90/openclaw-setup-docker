@@ -78,37 +78,13 @@ cleanup_duplicate_nodes_api() {
         return 0
     fi
     
-    log_info "Verifica nodi duplicati per hostname: ${hostname}..."
-    
-    # Se tailnet non specificata, prova a determinare dall'API
     if [[ -z "$tailnet" ]]; then
-        log_info "TS_TAILNET non specificata: provo a determinare dall'API..."
-        
-        # Chiama API per ottenere info sull'utente
-        local whoami
-        whoami=$(curl -s -X GET \
-            -u "${api_key}:" \
-            "https://api.tailscale.com/api/v2/user" \
-            -H "Accept: application/json" \
-            2>/dev/null || echo "")
-        
-        if [[ -n "$whoami" ]] && ! echo "$whoami" | grep -q "error"; then
-            # Estrai email dall'utente
-            local email
-            email=$(echo "$whoami" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('loginServerUrl', '').replace('https://', '').split('.')[0] if d.get('loginServerUrl') else '')" 2>/dev/null || true)
-            if [[ -n "$email" ]]; then
-                log_info "Tailnet trovata: ${email}"
-                # Per ora skip, l'utente deve configurare manualmente
-                log_warn "Configura TS_TAILNET in ${ENV_FILE}"
-                return 0
-            fi
-        fi
-        
-        log_warn "Impossibile determinare tailnet: configura TS_TAILNET in ${ENV_FILE}"
+        log_warn "TS_TAILNET non configurata: skip cleanup nodi duplicati"
+        log_info "Aggiungi TS_TAILNET in ${ENV_FILE}"
         return 0
     fi
     
-    log_info "Tailnet: ${tailnet}"
+    log_info "Verifica nodi duplicati per hostname: ${hostname}..."
     
     # Chiama API Tailscale per lista dispositivi
     local devices
@@ -202,6 +178,61 @@ except Exception as e:
     done
     
     log_success "Cleanup completato!"
+}
+
+# ============================================
+# ALTERNATIVA: CLEANUP VIA CLI (senza API)
+# ============================================
+
+cleanup_duplicate_nodes_cli() {
+    local hostname="${TAILSCALE_HOSTNAME:-openclaw}"
+    
+    if ! is_container_running "${TAILSCALE_CONTAINER}"; then
+        return 0
+    fi
+    
+    log_info "Verifica nodi duplicati via CLI..."
+    
+    # Ottieni lista nodi da tailscale status
+    local status_output
+    status_output=$(docker exec "${TAILSCALE_CONTAINER}" tailscale status --json 2>/dev/null || true)
+    
+    if [[ -z "$status_output" ]]; then
+        return 0
+    fi
+    
+    # Conta nodi con hostname che corrisponde
+    local node_count
+    node_count=$(echo "$status_output" | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    count = 0
+    # Conta Self
+    if 'Self' in data:
+        name = data['Self'].get('HostName', '')
+        if name.startswith('$hostname'):
+            count += 1
+    # Conta Peer
+    for peer_id, peer in data.get('Peer', {}).items():
+        name = peer.get('HostName', '')
+        if name.startswith('$hostname'):
+            count += 1
+    print(count)
+except:
+    print('0')
+" 2>/dev/null || echo "0")
+    
+    if [[ "$node_count" -le 1 ]]; then
+        log_success "Nessun nodo duplicato rilevato via CLI"
+        return 0
+    fi
+    
+    log_warn "Trovati ${node_count} nodi con hostname '${hostname}'"
+    log_info "Per pulire, usa Tailscale API o elimina manualmente da:"
+    log_info "  https://login.tailscale.com/admin/machines"
+    
+    return 0
 }
 
 check_image() {
